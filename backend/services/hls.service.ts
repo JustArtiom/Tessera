@@ -66,6 +66,10 @@ function isComplete(hlsDir: string): boolean {
   return fs.readFileSync(p, `utf8`).includes(`#EXT-X-ENDLIST`);
 }
 
+export function isHlsCompleteFor(downloadFilePath: string, fileRelativePath: string): boolean {
+  return isComplete(hlsDirFor(downloadFilePath, fileRelativePath));
+}
+
 function hasFirstSegment(hlsDir: string): boolean {
   const p = playlistFile(hlsDir);
   if (!fs.existsSync(p)) return false;
@@ -120,8 +124,9 @@ export async function ensureHls(
   if (isComplete(hlsDir)) {
     let job = jobs.get(key);
     if (!job) {
-      const plan = await planCodecs(fileAbsPath);
-      job = { status: `done`, duration: plan.duration, hlsDir, process: null, startedAt: 0 };
+      // Don't probe the source file — it may have been deleted after finalize.
+      // Duration is encoded in the playlist itself.
+      job = { status: `done`, duration: 0, hlsDir, process: null, startedAt: 0 };
       jobs.set(key, job);
     } else {
       job.status = `done`;
@@ -186,6 +191,24 @@ export async function ensureHls(
 
 export function getJob(downloadId: string, fileRelativePath: string): HlsJob | null {
   return jobs.get(jobKey(downloadId, fileRelativePath)) ?? null;
+}
+
+/**
+ * Resolves once the job's ffmpeg has fully finished (or errored). Used by finalize
+ * to know when it's safe to delete the original.
+ */
+export async function waitForJobDone(
+  downloadId: string,
+  fileRelativePath: string,
+  pollMs = 500,
+): Promise<HlsJob> {
+  const key = jobKey(downloadId, fileRelativePath);
+  while (true) {
+    const job = jobs.get(key);
+    if (!job) throw new Error(`No HLS job for ${key}`);
+    if (job.status === `done` || job.status === `error`) return job;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
 }
 
 export function cancelJobsFor(downloadId: string): void {

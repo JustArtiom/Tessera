@@ -7,8 +7,8 @@ import { prisma } from "../lib/prisma";
 import { env } from "../config/env";
 import { getConfigValues } from "../plugins/config-store";
 import { AppError } from "../middleware/error";
-import { cancelJobsFor as cancelHlsJobs, ensureHls } from "./hls.service";
-import { resolvePrimaryFile } from "./streaming.service";
+import { cancelJobsFor as cancelHlsJobs } from "./hls.service";
+import { finalizeDownload } from "./finalize.service";
 
 const VIDEO_EXTS = new Set([`.mp4`, `.mkv`, `.webm`, `.avi`, `.mov`, `.m4v`, `.ts`, `.mpeg`]);
 const PROGRESS_PERSIST_MS = 2000;
@@ -151,19 +151,18 @@ class DownloadManager {
       this.emitter.emit(downloadId, snap);
       this.emitter.emit(`*`, snap);
 
-      // Auto-prep the primary (largest) file only. Other files in a season pack
-      // prep lazily when the user clicks Play, so we don't pin the CPU for an hour.
+      // Run the full finalize pipeline: HLS prep → subtitle extract → delete original.
+      // Sequential per file to keep weak-CPU servers from being pinned.
       try {
         const row = await prisma.download.findUnique({ where: { id: downloadId } });
-        if (row?.filePath && row.primaryFile) {
-          const file = resolvePrimaryFile(row.filePath, row.primaryFile);
-          ensureHls(downloadId, row.filePath, file.absPath, row.primaryFile).catch((err) => {
-            console.error(`[downloads] auto HLS prep failed for ${downloadId}:`, err);
+        if (row?.filePath) {
+          finalizeDownload(downloadId, row.filePath, row.primaryFile).catch((err) => {
+            console.error(`[downloads] finalize failed for ${downloadId}:`, err);
           });
-          console.log(`[downloads] ${downloadId} done — HLS prep starting for primary file`);
+          console.log(`[downloads] ${downloadId} done — finalizing in background`);
         }
       } catch (err) {
-        console.error(`[downloads] could not start auto HLS for ${downloadId}:`, err);
+        console.error(`[downloads] could not start finalize for ${downloadId}:`, err);
       }
     });
 
@@ -265,15 +264,15 @@ class DownloadManager {
     const rows = await prisma.download.findMany({ where: { status: `done` } });
     let kicked = 0;
     for (const row of rows) {
-      if (!row.filePath || !row.primaryFile) continue;
+      if (!row.filePath) continue;
       try {
-        const file = resolvePrimaryFile(row.filePath, row.primaryFile);
-        ensureHls(row.id, row.filePath, file.absPath, row.primaryFile).catch((err) => {
-          console.error(`[downloads] startup HLS prep failed for ${row.id}:`, err);
+        // finalizeDownload is idempotent — skips fully-prepped files.
+        finalizeDownload(row.id, row.filePath, row.primaryFile).catch((err) => {
+          console.error(`[downloads] startup finalize failed for ${row.id}:`, err);
         });
         kicked++;
       } catch {
-        // Likely missing source file. Skip silently.
+        // ignore
       }
     }
     return kicked;

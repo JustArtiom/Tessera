@@ -4,21 +4,25 @@ import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/error";
 import { prisma } from "../lib/prisma";
 import { downloadManager } from "../services/download-manager";
-import { getJob as getHlsJob } from "../services/hls.service";
+import { getJob as getHlsJob, isHlsCompleteFor } from "../services/hls.service";
 
 const router = Router();
 
-function annotateHls<T extends { id: string; status: string; primaryFile?: string | null }>(row: T) {
-  // hlsStatus reflects the PRIMARY file's prep state (the auto-prepped one).
-  // Per-file status is exposed via /api/library/:id/files for season packs.
+function annotateHls<
+  T extends { id: string; status: string; primaryFile?: string | null; filePath?: string | null },
+>(row: T) {
   let hlsStatus: string;
   if (row.status !== `done`) {
     hlsStatus = `pending`;
-  } else if (!row.primaryFile) {
+  } else if (!row.primaryFile || !row.filePath) {
     hlsStatus = `idle`;
   } else {
+    // In-memory job covers the in-flight prep. After a server restart, jobs are empty
+    // but the playlist may already be complete on disk — check that as the source of truth.
     const job = getHlsJob(row.id, row.primaryFile);
-    hlsStatus = job?.status ?? `idle`;
+    if (job) hlsStatus = job.status;
+    else if (isHlsCompleteFor(row.filePath, row.primaryFile)) hlsStatus = `done`;
+    else hlsStatus = `idle`;
   }
   return { ...row, hlsStatus };
 }

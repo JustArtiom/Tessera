@@ -1,11 +1,11 @@
 import { Router } from "express";
 import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/error";
 import { prisma } from "../lib/prisma";
 import { signStreamToken, verifyStreamToken } from "../lib/stream-token";
-import { resolvePrimaryFile } from "../services/streaming.service";
 import { listVideoFiles } from "../services/files.service";
 import { getTrackVtt, listTracks } from "../services/subtitles.service";
 import {
@@ -20,18 +20,24 @@ const router = Router();
 
 const idParam = z.object({ id: z.string().min(1) });
 
-/** Resolve which file to operate on given an optional ?file= query (default: primaryFile). */
-function pickFile(row: { filePath: string | null; primaryFile: string | null }, fileParam: string | undefined) {
+/**
+ * Picks the file to operate on. Returns absPath even if the source has been deleted
+ * after finalize — callers must check needsSource if they actually need to read it.
+ */
+function pickFile(
+  row: { filePath: string | null; primaryFile: string | null },
+  fileParam: string | undefined,
+) {
   if (!row.filePath || !row.primaryFile) {
     throw new AppError(404, `Stream not available`);
   }
   const fileRel = (fileParam ?? row.primaryFile).trim();
-  // Defensive: must exist within the download dir
-  const file = resolvePrimaryFile(row.filePath, fileRel);
-  if (!fs.existsSync(file.absPath)) {
-    throw new AppError(404, `File missing on disk: ${fileRel}`);
+  const absPath = path.resolve(row.filePath, fileRel);
+  const root = path.resolve(row.filePath);
+  if (absPath !== root && !absPath.startsWith(root + path.sep)) {
+    throw new AppError(400, `File escapes download directory`);
   }
-  return { fileRel, file };
+  return { fileRel, absPath, downloadFilePath: row.filePath };
 }
 
 router.post(`/:id/stream-token`, requireAuth, async (req, res, next) => {
@@ -57,6 +63,8 @@ router.get(`/:id/files`, requireAuth, async (req, res, next) => {
     if (!row || !row.filePath) throw new AppError(404, `Download not found`);
     const files = listVideoFiles(row.filePath, row.primaryFile);
     const annotated = files.map((f) => {
+      // Finalized files have a complete on-disk playlist by definition.
+      if (f.finalized) return { ...f, hlsStatus: `done` };
       const job = getJob(id, f.relativePath);
       return { ...f, hlsStatus: job?.status ?? `idle` };
     });
@@ -98,8 +106,24 @@ router.get(`/:id/playlist.m3u8`, async (req, res, next) => {
     }
     const row = await prisma.download.findUnique({ where: { id } });
     if (!row) throw new AppError(404, `Download not found`);
-    const { fileRel, file } = pickFile(row, fileParam);
-    const job = await ensureHls(id, row.filePath!, file.absPath, fileRel);
+    const { fileRel, absPath, downloadFilePath } = pickFile(row, fileParam);
+    const hlsDir = hlsDirFor(downloadFilePath, fileRel);
+    const playlistPath = path.join(hlsDir, `playlist.m3u8`);
+
+    // Fast path: playlist already on disk → don't need the source.
+    if (fs.existsSync(playlistPath)) {
+      const playlist = readAndRewritePlaylist(hlsDir, token, fileRel);
+      res.setHeader(`Content-Type`, `application/vnd.apple.mpegurl`);
+      res.setHeader(`Cache-Control`, `private, no-cache`);
+      res.send(playlist);
+      return;
+    }
+
+    // Slow path: need to spawn ffmpeg, which requires the source.
+    if (!fs.existsSync(absPath)) {
+      throw new AppError(404, `Source file missing — can't prepare HLS`);
+    }
+    const job = await ensureHls(id, downloadFilePath, absPath, fileRel);
     if (job.status === `error`) {
       throw new AppError(500, `HLS preparation failed: ${job.errorMessage ?? `unknown`}`);
     }
@@ -153,8 +177,8 @@ router.get(`/:id/subtitles`, requireAuth, async (req, res, next) => {
     const fileParam = z.string().optional().parse(req.query.file);
     const row = await prisma.download.findUnique({ where: { id } });
     if (!row) throw new AppError(404, `Download not found`);
-    const { file } = pickFile(row, fileParam);
-    const tracks = await listTracks(file.absPath);
+    const { fileRel, absPath, downloadFilePath } = pickFile(row, fileParam);
+    const tracks = await listTracks(absPath, downloadFilePath, fileRel);
     res.json({ tracks });
   } catch (err) {
     next(err);
@@ -174,8 +198,8 @@ router.get(`/:id/subtitles/:trackId`, async (req, res, next) => {
     }
     const row = await prisma.download.findUnique({ where: { id } });
     if (!row) throw new AppError(404, `Download not found`);
-    const { file } = pickFile(row, fileParam);
-    const vtt = await getTrackVtt(file.absPath, row.filePath!, trackId);
+    const { fileRel, absPath, downloadFilePath } = pickFile(row, fileParam);
+    const vtt = await getTrackVtt(absPath, downloadFilePath, fileRel, trackId);
     res.setHeader(`Content-Type`, `text/vtt; charset=utf-8`);
     res.setHeader(`Cache-Control`, `private, max-age=3600`);
     res.send(vtt);
