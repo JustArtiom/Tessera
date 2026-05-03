@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist_backend/
+dist_frontend/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Plugins are user-installed at runtime — keep only the ones bundled with the repo
+plugins/*
+!plugins/nyaa-scraper/
+!plugins/animetosho-scraper/
+!plugins/piratebay-scraper/
+!plugins/yts-scraper/
+
+# Downloaded media (per-deployment)
+downloads/
+
+# Prisma
+prisma/migrations/dev.db*
+
+# Misc
+Archive.zip
+*.tgz
+.cache/

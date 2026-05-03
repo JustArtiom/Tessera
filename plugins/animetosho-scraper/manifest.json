@@ -1,0 +1,28 @@
+{
+  "id": "animetosho-scraper",
+  "name": "AnimeTosho",
+  "version": "0.1.0",
+  "author": "Tessera",
+  "type": "source",
+  "contentTypes": ["anime"],
+  "configSchema": [
+    {
+      "key": "minSeeders",
+      "label": "Minimum seeders",
+      "type": "number",
+      "default": 1
+    },
+    {
+      "key": "maxResults",
+      "label": "Max results",
+      "type": "number",
+      "default": 50
+    },
+    {
+      "key": "userAgent",
+      "label": "User-Agent",
+      "type": "string",
+      "default": "Tessera/0.5"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "id": "piratebay-scraper",
+  "name": "Pirate Bay (apibay)",
+  "version": "0.1.0",
+  "author": "Tessera",
+  "type": "source",
+  "contentTypes": ["movie", "tv", "anime"],
+  "configSchema": [
+    {
+      "key": "category",
+      "label": "Category",
+      "type": "select",
+      "default": "0",
+      "options": [
+        { "value": "0", "label": "All categories" },
+        { "value": "200", "label": "Video — All" },
+        { "value": "207", "label": "Movies — HD (1080p)" },
+        { "value": "211", "label": "Movies — 4K" },
+        { "value": "201", "label": "Movies — SD" },
+        { "value": "205", "label": "TV — All" },
+        { "value": "208", "label": "TV — HD" },
+        { "value": "212", "label": "TV — 4K" }
+      ]
+    },
+    {
+      "key": "minSeeders",
+      "label": "Minimum seeders",
+      "type": "number",
+      "default": 1
+    },
+    {
+      "key": "maxResults",
+      "label": "Max results",
+      "type": "number",
+      "default": 50
+    },
+    {
+      "key": "userAgent",
+      "label": "User-Agent",
+      "type": "string",
+      "default": "Tessera/0.5"
+    }
+  ]
+}

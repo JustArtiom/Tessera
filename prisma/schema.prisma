@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+model PluginConfig {
+  pluginId  String   @id
+  values    Json
+  updatedAt DateTime @updatedAt
+}
+
+model Download {
+  id              String   @id @default(cuid())
+  userId          String?
+  pluginId        String
+  mediaId         String
+  title           String
+  poster          String?
+  magnet          String
+  infoHash        String?  @unique
+  filePath        String?
+  primaryFile     String?
+  totalBytes      BigInt?
+  downloadedBytes BigInt   @default(0)
+  status          String
+  errorMessage    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([userId])
+}

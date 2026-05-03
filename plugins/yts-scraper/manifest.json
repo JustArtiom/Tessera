@@ -1,0 +1,42 @@
+{
+  "id": "yts-scraper",
+  "name": "YTS Movies",
+  "version": "0.1.0",
+  "author": "Tessera",
+  "type": "source",
+  "contentTypes": ["movie"],
+  "configSchema": [
+    {
+      "key": "quality",
+      "label": "Quality filter",
+      "type": "select",
+      "default": "all",
+      "options": [
+        { "value": "all", "label": "All qualities" },
+        { "value": "720p", "label": "720p only" },
+        { "value": "1080p", "label": "1080p only" },
+        { "value": "2160p", "label": "2160p (4K) only" },
+        { "value": "3D", "label": "3D only" }
+      ]
+    },
+    {
+      "key": "minSeeders",
+      "label": "Minimum seeders",
+      "type": "number",
+      "default": 1
+    },
+    {
+      "key": "maxMovies",
+      "label": "Max movies (each may have multiple qualities)",
+      "type": "number",
+      "default": 25
+    },
+    {
+      "key": "userAgent",
+      "label": "User-Agent",
+      "type": "string",
+      "default": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+      "description": "YTS sometimes blocks default Node fetch; a browser-like UA gets through."
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "id": "nyaa-scraper",
+  "name": "Nyaa Scraper",
+  "version": "0.1.0",
+  "author": "Tessera",
+  "type": "source",
+  "contentTypes": ["anime"],
+  "configSchema": [
+    {
+      "key": "category",
+      "label": "Category",
+      "type": "select",
+      "default": "1_0",
+      "options": [
+        { "value": "0_0", "label": "All Categories" },
+        { "value": "1_0", "label": "Anime — All" },
+        { "value": "1_2", "label": "Anime — English-translated" },
+        { "value": "1_3", "label": "Anime — Non-English-translated" },
+        { "value": "1_4", "label": "Anime — Raw" }
+      ]
+    },
+    {
+      "key": "minSeeders",
+      "label": "Minimum seeders",
+      "type": "number",
+      "default": 1
+    },
+    {
+      "key": "maxResults",
+      "label": "Max results",
+      "type": "number",
+      "default": 50
+    },
+    {
+      "key": "downloadDir",
+      "label": "Download directory",
+      "type": "path",
+      "description": "Where to save downloads from this plugin. Relative paths are resolved against the project root. Leave empty to use ./downloads/nyaa-scraper."
+    },
+    {
+      "key": "userAgent",
+      "label": "User-Agent",
+      "type": "string",
+      "default": "Tessera/0.2"
+    }
+  ]
+}
