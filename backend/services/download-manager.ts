@@ -9,6 +9,7 @@ import { getConfigValues } from "../plugins/config-store";
 import { AppError } from "../middleware/error";
 import { cancelJobsFor as cancelHlsJobs } from "./hls.service";
 import { finalizeDownload } from "./finalize.service";
+import { infoHashFromMagnet } from "../lib/infohash";
 
 const VIDEO_EXTS = new Set([`.mp4`, `.mkv`, `.webm`, `.avi`, `.mov`, `.m4v`, `.ts`, `.mpeg`]);
 const PROGRESS_PERSIST_MS = 2000;
@@ -190,9 +191,9 @@ class DownloadManager {
 
     const client = await this.getClient();
 
-    // Pre-check info hash to avoid creating a duplicate DB row.
-    const m = params.magnet.match(/btih:([a-f0-9]{40})/i);
-    const presumedHash = m ? m[1].toLowerCase() : null;
+    // Pre-check info hash to avoid creating a duplicate DB row. Handles both hex
+    // and base32 magnets so the dedupe works no matter which client built the URI.
+    const presumedHash = infoHashFromMagnet(params.magnet);
     if (presumedHash) {
       const existing = await prisma.download.findUnique({ where: { infoHash: presumedHash } });
       if (existing) {

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
 import { useToast } from "../lib/toast";
 import type { DownloadRow, SearchResult } from "../lib/types";
@@ -121,13 +122,23 @@ export function Home() {
                       <span className="text-emerald-400">{s.seeders}se</span>
                     )}
                   </div>
-                  <button
-                    onClick={() => startDownload(r)}
-                    disabled={busyId === r.id}
-                    className="shrink-0 text-xs bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded px-3 py-1.5 transition-colors"
-                  >
-                    {busyId === r.id ? `…` : `Download`}
-                  </button>
+                  {r.existing ? (
+                    <Link
+                      to="/library"
+                      title="Already in library"
+                      className="shrink-0 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 rounded px-3 py-1.5 transition-colors"
+                    >
+                      ✓ In library
+                    </Link>
+                  ) : (
+                    <button
+                      onClick={() => startDownload(r)}
+                      disabled={busyId === r.id}
+                      className="shrink-0 text-xs bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded px-3 py-1.5 transition-colors"
+                    >
+                      {busyId === r.id ? `…` : `Download`}
+                    </button>
+                  )}
                 </div>
               </li>
             );

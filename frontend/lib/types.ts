@@ -14,6 +14,8 @@ export interface SearchResult {
   description?: string;
   streams: StreamSource[];
   pluginId: string;
+  /** Set when the torrent is already in the user's library — show a Library link instead of Download. */
+  existing?: { id: string; status: string };
 }
 
 export interface VideoFile {
