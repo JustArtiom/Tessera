@@ -21,7 +21,11 @@ export interface VideoFile {
   name: string;
   size: number;
   isPrimary: boolean;
+  /** "idle" | "queued" | "starting" | "running" | "done" | "error" */
   hlsStatus: string;
+  /** 0..1 — how much of the file ffmpeg has processed */
+  progress: number;
+  finalized?: boolean;
 }
 
 export interface DownloadRow {
@@ -31,8 +35,10 @@ export interface DownloadRow {
   title: string;
   poster?: string | null;
   status: string;
-  /** "pending" while download isn't done, then "idle"|"starting"|"running"|"done"|"error" */
+  /** "pending"|"idle"|"queued"|"starting"|"running"|"done"|"error" */
   hlsStatus: string;
+  /** 0..1 — primary file's processing progress */
+  hlsProgress: number;
   errorMessage?: string | null;
   totalBytes: number | null;
   downloadedBytes: number;

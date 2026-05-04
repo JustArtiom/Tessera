@@ -15,6 +15,8 @@ export type HlsStatus = `starting` | `running` | `done` | `error`;
 export interface HlsJob {
   status: HlsStatus;
   duration: number;
+  /** 0..1, derived from ffmpeg's -progress output divided by total duration. */
+  progress: number;
   hlsDir: string;
   errorMessage?: string;
   process: ChildProcess | null;
@@ -91,6 +93,8 @@ function spawnFfmpeg(key: string, absPath: string, hlsDir: string, plan: CodecPl
   } else {
     args.push(`-c:a`, `aac`, `-b:a`, `192k`);
   }
+  // -progress pipe:1 emits structured key=value lines we parse for live progress.
+  args.push(`-progress`, `pipe:1`);
   args.push(
     `-hls_time`, String(SEGMENT_DURATION),
     `-hls_list_size`, `0`,
@@ -100,7 +104,7 @@ function spawnFfmpeg(key: string, absPath: string, hlsDir: string, plan: CodecPl
     playlistFile(hlsDir),
   );
   console.log(`[hls ${key}] spawning ffmpeg (videoCopy=${plan.videoCopy}, audioCopy=${plan.audioCopy})`);
-  return spawn(`ffmpeg`, args, { stdio: [`ignore`, `ignore`, `pipe`] });
+  return spawn(`ffmpeg`, args, { stdio: [`ignore`, `pipe`, `pipe`] });
 }
 
 async function waitForFirstSegment(hlsDir: string): Promise<boolean> {
@@ -124,12 +128,18 @@ export async function ensureHls(
   if (isComplete(hlsDir)) {
     let job = jobs.get(key);
     if (!job) {
-      // Don't probe the source file — it may have been deleted after finalize.
-      // Duration is encoded in the playlist itself.
-      job = { status: `done`, duration: 0, hlsDir, process: null, startedAt: 0 };
+      job = {
+        status: `done`,
+        duration: 0,
+        progress: 1,
+        hlsDir,
+        process: null,
+        startedAt: 0,
+      };
       jobs.set(key, job);
     } else {
       job.status = `done`;
+      job.progress = 1;
     }
     return job;
   }
@@ -148,12 +158,25 @@ export async function ensureHls(
   const job: HlsJob = {
     status: `starting`,
     duration: plan.duration,
+    progress: 0,
     hlsDir,
     process: proc,
     startedAt: Date.now(),
   };
   jobs.set(key, job);
 
+  // Parse `key=value` progress blocks from ffmpeg's stdout.
+  proc.stdout?.on(`data`, (b: Buffer) => {
+    const text = b.toString(`utf8`);
+    // out_time_us is microseconds of the most recent decoded position.
+    const matches = [...text.matchAll(/out_time_us=(\d+)/g)];
+    if (matches.length > 0 && job.duration > 0) {
+      const lastUs = parseInt(matches[matches.length - 1][1], 10);
+      const seconds = lastUs / 1_000_000;
+      job.progress = Math.max(0, Math.min(1, seconds / job.duration));
+    }
+    if (text.includes(`progress=end`)) job.progress = 1;
+  });
   proc.stderr?.on(`data`, (b: Buffer) => {
     const msg = b.toString(`utf8`).trim();
     if (msg) console.warn(`[hls ${key}] ${msg}`);
@@ -168,6 +191,7 @@ export async function ensureHls(
     job.process = null;
     if (code === 0) {
       job.status = `done`;
+      job.progress = 1;
       console.log(`[hls ${key}] complete`);
     } else if (job.status !== `error`) {
       job.status = `error`;

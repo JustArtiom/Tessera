@@ -14,6 +14,7 @@ const schema = z.object({
   JWT_EXPIRES_IN: z.string().default(`7d`),
   PLUGINS_DIR: z.string().default(`plugins`),
   ALLOW_REGISTER: boolFromEnv,
+  POST_PROCESS_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(5),
 });
 
 const parsed = schema.safeParse(process.env);

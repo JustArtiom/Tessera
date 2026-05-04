@@ -3,6 +3,26 @@ import path from "node:path";
 import { ensureHls, hlsDirFor, waitForJobDone } from "./hls.service";
 import { prepareSubtitles } from "./subtitles.service";
 import { listVideoFiles } from "./files.service";
+import { JobQueue } from "../lib/job-queue";
+import { env } from "../config/env";
+
+/**
+ * Global concurrency cap for ffmpeg post-processing across every download.
+ * Configured via POST_PROCESS_CONCURRENCY (default 5).
+ */
+export const postProcessQueue = new JobQueue(env.POST_PROCESS_CONCURRENCY);
+
+function fileQueueKey(downloadId: string, fileRelativePath: string): string {
+  return `${downloadId}::${fileRelativePath}`;
+}
+
+export function isFileQueued(downloadId: string, fileRelativePath: string): boolean {
+  return postProcessQueue.isQueued(fileQueueKey(downloadId, fileRelativePath));
+}
+
+export function isFileRunning(downloadId: string, fileRelativePath: string): boolean {
+  return postProcessQueue.isRunning(fileQueueKey(downloadId, fileRelativePath));
+}
 
 export interface FileMeta {
   originalRelativePath: string;
@@ -40,7 +60,8 @@ function writeFileMeta(
 }
 
 /**
- * Per-file post-download pipeline:
+ * Per-file post-download pipeline (executed inside the post-process queue so we never
+ * exceed POST_PROCESS_CONCURRENCY concurrent ffmpegs):
  *   1. ensureHls + wait for ffmpeg to fully finish
  *   2. pre-extract all subtitle tracks to .vtt files
  *   3. write meta.json so the file shows in the library after the original is gone
@@ -56,54 +77,55 @@ async function finalizeOneFile(
   isPrimary: boolean,
 ): Promise<{ ok: boolean; reason?: string }> {
   if (!fs.existsSync(fileAbsPath)) {
-    // Already finalized in a previous run; just make sure meta is present.
-    if (readFileMeta(downloadFilePath, fileRelativePath)) {
-      return { ok: true };
-    }
+    if (readFileMeta(downloadFilePath, fileRelativePath)) return { ok: true };
     return { ok: false, reason: `source missing and no meta.json` };
   }
 
   const stat = fs.statSync(fileAbsPath);
+  const key = fileQueueKey(downloadId, fileRelativePath);
 
-  // 1. HLS prep — this returns once first segment exists; we wait for the full encode.
-  await ensureHls(downloadId, downloadFilePath, fileAbsPath, fileRelativePath);
-  const job = await waitForJobDone(downloadId, fileRelativePath);
-  if (job.status !== `done`) {
-    return { ok: false, reason: job.errorMessage ?? `HLS prep failed` };
-  }
+  let result: { ok: boolean; reason?: string } = { ok: true };
 
-  // 2. Pre-extract subtitles before we delete the source.
-  try {
-    await prepareSubtitles(fileAbsPath, downloadFilePath, fileRelativePath);
-  } catch (err) {
-    console.warn(
-      `[finalize] subtitle prep had issues for ${fileRelativePath}:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
+  await postProcessQueue.enqueue(key, async () => {
+    // ─── HLS prep ───────────────────────────────────────────────────────────
+    await ensureHls(downloadId, downloadFilePath, fileAbsPath, fileRelativePath);
+    const job = await waitForJobDone(downloadId, fileRelativePath);
+    if (job.status !== `done`) {
+      result = { ok: false, reason: job.errorMessage ?? `HLS prep failed` };
+      return;
+    }
 
-  // 3. Persist a meta record so the library can list this file after the source is gone.
-  writeFileMeta(downloadFilePath, fileRelativePath, {
-    originalRelativePath: fileRelativePath,
-    originalName: path.basename(fileRelativePath),
-    originalSize: stat.size,
-    isPrimary,
-    finalizedAt: Date.now(),
+    // ─── Subtitles ──────────────────────────────────────────────────────────
+    try {
+      await prepareSubtitles(fileAbsPath, downloadFilePath, fileRelativePath);
+    } catch (err) {
+      console.warn(
+        `[finalize] subtitle prep had issues for ${fileRelativePath}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    // ─── Meta record + delete source ────────────────────────────────────────
+    writeFileMeta(downloadFilePath, fileRelativePath, {
+      originalRelativePath: fileRelativePath,
+      originalName: path.basename(fileRelativePath),
+      originalSize: stat.size,
+      isPrimary,
+      finalizedAt: Date.now(),
+    });
+    try {
+      fs.rmSync(fileAbsPath, { force: true });
+      console.log(`[finalize] removed original: ${fileRelativePath}`);
+      cleanEmptyDirs(downloadFilePath, path.dirname(fileAbsPath));
+    } catch (err) {
+      console.warn(
+        `[finalize] could not remove ${fileAbsPath}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   });
 
-  // 4. Delete the original. The HLS dir + meta + subs cache stay.
-  try {
-    fs.rmSync(fileAbsPath, { force: true });
-    console.log(`[finalize] removed original: ${fileRelativePath}`);
-    cleanEmptyDirs(downloadFilePath, path.dirname(fileAbsPath));
-  } catch (err) {
-    console.warn(
-      `[finalize] could not remove ${fileAbsPath}:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
-
-  return { ok: true };
+  return result;
 }
 
 /** Walks up from `dir` deleting empty directories until we hit `downloadFilePath`. */
@@ -128,8 +150,9 @@ function cleanEmptyDirs(downloadRoot: string, dir: string): void {
 const inFlight = new Set<string>();
 
 /**
- * Sequentially finalize every video file under a download. Sequential keeps weak-CPU
- * servers from being pinned by N concurrent ffmpegs.
+ * Enqueues every video file under a download for post-processing. Each file goes
+ * through {@link postProcessQueue}, which globally caps concurrent ffmpegs at
+ * POST_PROCESS_CONCURRENCY. Primary file enqueues first so it usually finishes first.
  */
 export async function finalizeDownload(
   downloadId: string,
@@ -142,24 +165,26 @@ export async function finalizeDownload(
     const files = listVideoFiles(downloadFilePath, primaryFile);
     if (files.length === 0) return;
 
-    // Process primary first so the user can play the most-likely-wanted file ASAP.
     files.sort((a, b) => (a.isPrimary === b.isPrimary ? 0 : a.isPrimary ? -1 : 1));
 
-    for (const f of files) {
-      const abs = path.join(downloadFilePath, f.relativePath);
-      const result = await finalizeOneFile(
-        downloadId,
-        downloadFilePath,
-        f.relativePath,
-        abs,
-        f.isPrimary,
-      );
-      if (!result.ok) {
-        console.error(
-          `[finalize ${downloadId}] ${f.relativePath} failed: ${result.reason ?? `unknown`}`,
+    // Fire-and-forget per-file. The queue serialises beyond its concurrency cap.
+    await Promise.all(
+      files.map(async (f) => {
+        const abs = path.join(downloadFilePath, f.relativePath);
+        const result = await finalizeOneFile(
+          downloadId,
+          downloadFilePath,
+          f.relativePath,
+          abs,
+          f.isPrimary,
         );
-      }
-    }
+        if (!result.ok) {
+          console.error(
+            `[finalize ${downloadId}] ${f.relativePath} failed: ${result.reason ?? `unknown`}`,
+          );
+        }
+      }),
+    );
   } finally {
     inFlight.delete(downloadId);
   }

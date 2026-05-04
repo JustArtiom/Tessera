@@ -15,6 +15,7 @@ import {
   readAndRewritePlaylist,
   resolveSegment,
 } from "../services/hls.service";
+import { isFileQueued, isFileRunning } from "../services/finalize.service";
 
 const router = Router();
 
@@ -63,10 +64,21 @@ router.get(`/:id/files`, requireAuth, async (req, res, next) => {
     if (!row || !row.filePath) throw new AppError(404, `Download not found`);
     const files = listVideoFiles(row.filePath, row.primaryFile);
     const annotated = files.map((f) => {
-      // Finalized files have a complete on-disk playlist by definition.
-      if (f.finalized) return { ...f, hlsStatus: `done` };
+      if (f.finalized) {
+        return { ...f, hlsStatus: `done`, progress: 1 };
+      }
       const job = getJob(id, f.relativePath);
-      return { ...f, hlsStatus: job?.status ?? `idle` };
+      if (job) {
+        return { ...f, hlsStatus: job.status, progress: job.progress };
+      }
+      // No active in-memory job — could be queued waiting for a slot, or not started.
+      if (isFileQueued(id, f.relativePath)) {
+        return { ...f, hlsStatus: `queued`, progress: 0 };
+      }
+      if (isFileRunning(id, f.relativePath)) {
+        return { ...f, hlsStatus: `starting`, progress: 0 };
+      }
+      return { ...f, hlsStatus: `idle`, progress: 0 };
     });
     res.json({ files: annotated });
   } catch (err) {
@@ -84,9 +96,15 @@ router.get(`/:id/hls-status`, requireAuth, async (req, res, next) => {
     }
     const fileRel = fileParam ?? row.primaryFile;
     const job = getJob(id, fileRel);
+    let status = job?.status ?? `idle`;
+    if (!job) {
+      if (isFileQueued(id, fileRel)) status = `queued`;
+      else if (isFileRunning(id, fileRel)) status = `starting`;
+    }
     res.json({
-      status: job?.status ?? `idle`,
+      status,
       duration: job?.duration ?? 0,
+      progress: job?.progress ?? 0,
       errorMessage: job?.errorMessage ?? null,
     });
   } catch (err) {

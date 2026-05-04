@@ -5,26 +5,34 @@ import { AppError } from "../middleware/error";
 import { prisma } from "../lib/prisma";
 import { downloadManager } from "../services/download-manager";
 import { getJob as getHlsJob, isHlsCompleteFor } from "../services/hls.service";
+import { isFileQueued, isFileRunning } from "../services/finalize.service";
 
 const router = Router();
 
 function annotateHls<
   T extends { id: string; status: string; primaryFile?: string | null; filePath?: string | null },
 >(row: T) {
-  let hlsStatus: string;
-  if (row.status !== `done`) {
-    hlsStatus = `pending`;
-  } else if (!row.primaryFile || !row.filePath) {
-    hlsStatus = `idle`;
-  } else {
-    // In-memory job covers the in-flight prep. After a server restart, jobs are empty
-    // but the playlist may already be complete on disk — check that as the source of truth.
+  let hlsStatus = `pending`;
+  let hlsProgress = 0;
+  if (row.status === `done` && row.primaryFile && row.filePath) {
     const job = getHlsJob(row.id, row.primaryFile);
-    if (job) hlsStatus = job.status;
-    else if (isHlsCompleteFor(row.filePath, row.primaryFile)) hlsStatus = `done`;
-    else hlsStatus = `idle`;
+    if (job) {
+      hlsStatus = job.status;
+      hlsProgress = job.progress;
+    } else if (isHlsCompleteFor(row.filePath, row.primaryFile)) {
+      hlsStatus = `done`;
+      hlsProgress = 1;
+    } else if (isFileQueued(row.id, row.primaryFile)) {
+      hlsStatus = `queued`;
+    } else if (isFileRunning(row.id, row.primaryFile)) {
+      hlsStatus = `starting`;
+    } else {
+      hlsStatus = `idle`;
+    }
+  } else if (row.status !== `done`) {
+    hlsStatus = `pending`;
   }
-  return { ...row, hlsStatus };
+  return { ...row, hlsStatus, hlsProgress };
 }
 
 const createSchema = z.object({
