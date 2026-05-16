@@ -12,6 +12,7 @@ import {
   ensureHls,
   getJob,
   hlsDirFor,
+  isHlsCompleteFor,
   readAndRewritePlaylist,
   resolveSegment,
 } from "../services/hls.service";
@@ -95,6 +96,12 @@ router.get(`/:id/hls-status`, requireAuth, async (req, res, next) => {
       throw new AppError(404, `Stream not available`);
     }
     const fileRel = fileParam ?? row.primaryFile;
+    // HLS already fully written to disk (incl. server-restart case where the in-memory
+    // job is gone): tell the player it's ready without waiting on a job entry.
+    if (isHlsCompleteFor(row.filePath, fileRel)) {
+      res.json({ status: `done`, duration: 0, progress: 1, errorMessage: null });
+      return;
+    }
     const job = getJob(id, fileRel);
     let status = job?.status ?? `idle`;
     if (!job) {
