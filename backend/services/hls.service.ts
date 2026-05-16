@@ -24,9 +24,28 @@ export interface HlsJob {
 }
 
 const jobs = new Map<string, HlsJob>();
+/**
+ * Per-key in-flight promises for {@link ensureHls}. Without this, two concurrent
+ * callers (e.g. the post-process queue and a user clicking play) both pass the
+ * dedupe check before the first `await`, then race two ffmpegs into the same
+ * hlsDir — corrupting the playlist and orphaning one process.
+ */
+const inflight = new Map<string, Promise<HlsJob>>();
 
 function jobKey(downloadId: string, fileRelativePath: string): string {
   return `${downloadId}::${fileRelativePath}`;
+}
+
+function doneJob(key: string, hlsDir: string): HlsJob {
+  let job = jobs.get(key);
+  if (!job) {
+    job = { status: `done`, duration: 0, progress: 1, hlsDir, process: null, startedAt: 0 };
+    jobs.set(key, job);
+  } else {
+    job.status = `done`;
+    job.progress = 1;
+  }
+  return job;
 }
 
 interface CodecPlan {
@@ -125,29 +144,35 @@ export async function ensureHls(
   const key = jobKey(downloadId, fileRelativePath);
   const hlsDir = hlsDirFor(downloadFilePath, fileRelativePath);
 
-  if (isComplete(hlsDir)) {
-    let job = jobs.get(key);
-    if (!job) {
-      job = {
-        status: `done`,
-        duration: 0,
-        progress: 1,
-        hlsDir,
-        process: null,
-        startedAt: 0,
-      };
-      jobs.set(key, job);
-    } else {
-      job.status = `done`;
-      job.progress = 1;
-    }
-    return job;
-  }
+  if (isComplete(hlsDir)) return doneJob(key, hlsDir);
 
+  // If an existing job is already past the first-segment milestone, callers can
+  // safely read the playlist now — no need to wait on a fresh promise.
   const existing = jobs.get(key);
-  if (existing && (existing.status === `starting` || existing.status === `running`)) {
-    return existing;
-  }
+  if (existing && existing.status === `running`) return existing;
+
+  // Otherwise share a single in-flight ensureHls so two callers never spawn
+  // two ffmpegs writing to the same hlsDir.
+  const pending = inflight.get(key);
+  if (pending) return pending;
+
+  const promise = startHlsJob(downloadId, downloadFilePath, fileAbsPath, fileRelativePath);
+  inflight.set(key, promise);
+  void promise.finally(() => inflight.delete(key));
+  return promise;
+}
+
+async function startHlsJob(
+  downloadId: string,
+  downloadFilePath: string,
+  fileAbsPath: string,
+  fileRelativePath: string,
+): Promise<HlsJob> {
+  const key = jobKey(downloadId, fileRelativePath);
+  const hlsDir = hlsDirFor(downloadFilePath, fileRelativePath);
+
+  // Re-check now that we hold the inflight slot: previous run may have completed.
+  if (isComplete(hlsDir)) return doneJob(key, hlsDir);
 
   if (fs.existsSync(hlsDir)) fs.rmSync(hlsDir, { recursive: true, force: true });
   fs.mkdirSync(hlsDir, { recursive: true });
